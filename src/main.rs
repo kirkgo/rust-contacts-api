@@ -3,6 +3,7 @@ use postgres::Error as PostgresError;
 use std::net::{ TcpListener, TcpStream};
 use std::io::{ Read, Write};
 use std::env;
+use postgres::types::IsNull::No;
 
 #[macro_use]
 extern crate serde_derive;
@@ -67,6 +68,89 @@ fn handle_client(mut stream: TcpStream) {
             stream.write_all(format!("{}{}", status_line, content).as_bytes()).unwrap();
         }
         Err(e) => eprintln!("Unable to read stream: {}", e),
+    }
+}
+
+// handle post request
+fn handle_post_request(request: &str) -> (String, String) {
+    match (get_contact_request_body(&request), Client::connect(DB_URL, NoTls)) {
+        (Ok(contact), Ok(mut client)) => {
+            client.execute(
+                "INSERT INTO contacts (name, email, phohe) VALUES ($1, $2, $3)",
+                &[&contact.name, &contact.email, &contact.phone]
+            ).unwrap();
+            (OK_RESPONSE.to_string(), "Contact created".to_string())
+        }
+        _ => (INTERNAL_ERROR.to_string(), "Internal error".to_string()),
+    }
+}
+
+// handle get request
+fn handle_get_request(request: &str) -> (String, String) {
+    match (get_id(&request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
+        (Ok(id), Ok(mut client)) => match client.query_one("SELECT * FROM contacts WHERE id = $1", &[&id]) {
+            Ok(row) => {
+                let contact = Contact {
+                    id: row.get(0),
+                    name: row.get(1),
+                    email: row.get(2),
+                    phone: row.get(3),
+                };
+                (OK_RESPONSE.to_string(), serde_json::to_string(&contact).unwrap())
+            }
+            _ => (NOT_FOUND.to_string(), "Contact not found".to_string()),
+        }
+        _ => (INTERNAL_ERROR.to_string(), "Internal error".to_string()),
+    }
+}
+
+// handle get all request
+fn handle_get_all_request(_request: &str) -> (String, String) {
+    match Client::connect(DB_URL, NoTls) {
+        Ok(mut client) => {
+            let mut contacts = Vec::new();
+            for row in client.query("SELECT id, name, email, phone FROM contacts", &[]).unwrap() {
+                contacts.push(Contact {
+                    id: row.get(0),
+                    name: row.get(1),
+                    email: row.get(2),
+                    phone: row.get(3),
+                });
+            }
+            (OK_RESPONSE.to_string(), serde_json::to_string(&contacts).unwrap())
+        }
+        _ => (INTERNAL_ERROR.to_string(), "Internal error".to_string()),
+    }
+}
+
+// handle put request
+fn handle_put_request(request: &str) -> (String, String) {
+    match
+    (
+        get_id(&request).parse::<i32>(),
+        get_contact_request_body(&request),
+        Client::connect(DB_URL, NoTls),
+    )
+    {
+        (Ok(id), Ok(contact), Ok(mut client)) => {
+            client.execute("UPDATE contacts SET name = $1, email = $2, phone = $3 WHERE id = $4", &[&contact.name, &contact.email, &contact.phone, &id]).unwrap();
+            (OK_RESPONSE.to_string(), "Contact updated".to_string())
+        }
+        _ => (INTERNAL_ERROR.to_string(), "Internal error".to_string()),
+    }
+}
+
+// handle delete request
+fn handle_delete_request(request: &str) -> (String, String) {
+    match (get_id(&request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
+        (Ok(id), Ok(mut client)) => {
+            let rows_affected = client.execute("DELETE FROM contacts WHERE id = $1", &[&id]).unwrap();
+            if rows_affected == 0 {
+                return (NOT_FOUND.to_string(), "Contact not found".to_string());
+            }
+            (OK_RESPONSE.to_string(), "Contact deleted".to_string())
+        }
+        _ => (INTERNAL_ERROR.to_string(), "Internal error".to_string()),
     }
 }
 
